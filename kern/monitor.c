@@ -21,10 +21,14 @@ struct Command {
 	int (*func)(int argc, char** argv, struct Trapframe* tf);
 };
 
-static struct Command commands[] = {
-	{ "help", "Display this list of commands", mon_help },
-	{ "kerninfo", "Display information about the kernel", mon_kerninfo },
-};
+static struct Command commands[] = { { "help", "Display this list of commands",
+		mon_help }, { "kerninfo", "Display information about the kernel",
+		mon_kerninfo }, { "backtrace", "Display a list of call frames",
+		mon_backtrace }, };
+
+#define NCOMMANDS (sizeof(commands)/sizeof(commands[0]))
+#define NUKE_EBP 0x0 //the end in the chain of saved EBP
+#define ARGSC 5  //number of arguments to print from function stack frame
 #define NCOMMANDS (sizeof(commands)/sizeof(commands[0]))
 
 unsigned read_eip();
@@ -56,10 +60,28 @@ mon_kerninfo(int argc, char **argv, struct Trapframe *tf)
 	return 0;
 }
 
-int
-mon_backtrace(int argc, char **argv, struct Trapframe *tf)
-{
-	// Your code here.
+int mon_backtrace(int argc, char **argv, struct Trapframe *tf) {
+	uintptr_t *ebp = (uintptr_t*) read_ebp(), *saved_ebp, eip;
+
+	cprintf("\nStack backtrace:\n");
+	int i;
+	struct Eipdebuginfo info;
+	do {
+		saved_ebp = (uintptr_t*) *ebp;
+		cprintf("  ebp %x ", ebp++);
+		eip = (uintptr_t) *ebp;
+		cprintf("eip %x ", *ebp++);
+		cprintf("args ");
+		i = ARGSC;
+		while (i--)
+			cprintf("%08x ", *ebp++);
+		debuginfo_eip((uintptr_t) eip, &info);
+		cprintf("\n        ");
+		cprintf("%s:%d: ", info.eip_file, info.eip_line);
+		cprintf("%.*s+%d\n", info.eip_fn_namelen, info.eip_fn_name, eip
+				- info.eip_fn_addr);
+		ebp = saved_ebp;
+	} while (saved_ebp != NUKE_EBP);
 	return 0;
 }
 
