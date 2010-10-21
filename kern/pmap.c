@@ -469,12 +469,10 @@ page_init(void)
 	LIST_INIT(&page_free_list);
 	pages[i++].pp_ref = 1;
 
-
 	//The rest of base memory, [PGSIZE, basemem) is free.
 	for (; (i + 1) * PGSIZE < basemem; i++) {
 		pages[i].pp_ref = 0;
 		LIST_INSERT_HEAD(&page_free_list,&pages[i],pp_link);
-
 	}
 
 	// Then comes the IO hole [IOPHYSMEM, EXTPHYSMEM).
@@ -484,14 +482,13 @@ page_init(void)
 	uint32_t boot_freemem_pa = PADDR(ROUNDDOWN(boot_freemem-1,PGSIZE));
 	for (; i * PGSIZE < boot_freemem_pa; i++)
 		pages[i].pp_ref = 1;
-    ++i;
+	++i;
 	//  The rest of  memory [PADDR(boot_freemem),maxpa] is free.
-	for (; (i + 1) * PGSIZE <maxpa ; i++) {
+	for (; (i + 1) * PGSIZE < maxpa; i++) {
 		pages[i].pp_ref = 0;
 		LIST_INSERT_HEAD(&page_free_list,&pages[i],pp_link);
 
 	}
-
 
 
 }
@@ -558,25 +555,38 @@ page_decref(struct Page* pp)
 // a pointer to the page table entry (PTE) for linear address 'va'.
 // This requires walking the two-level page table structure.
 //
-// If the relevant page table doesn't exist in the page directory, then:
-//    - If create == 0, pgdir_walk returns NULL.
-//    - Otherwise, pgdir_walk tries to allocate a new page table
-//	with page_alloc.  If this fails, pgdir_walk returns NULL.
-//    - pgdir_walk sets pp_ref to 1 for the new page table.
-//    - pgdir_walk clears the new page table.
-//    - Finally, pgdir_walk returns a pointer into the new page table.
-//
-// Hint: you can turn a Page * into the physical address of the
-// page it refers to with page2pa() from kern/pmap.h.
-//
-// Hint 2: the x86 MMU checks permission bits in both the page directory
-// and the page table, so it's safe to leave permissions in the page
-// more permissive than strictly necessary.
 pte_t *
 pgdir_walk(pde_t *pgdir, const void *va, int create)
 {
-	// Fill this function in
-	return NULL;
+	pte_t *pt = (pte_t *) pgdir[PDX(va)];
+
+	if (pt != 0) {
+		pt = (pte_t *) KADDR(PTE_ADDR(pt));
+		return pt + PTX(va);
+	}
+
+	// If the relevant page table doesn't exist in the page directory, then:
+	// If create == 0, pgdir_walk returns NULL.
+	if (!create)
+		return NULL;
+
+	//Otherwise, pgdir_walk tries to allocate a new page table
+	struct Page *pp_store = NULL;
+	//	with page_alloc.  If this fails, pgdir_walk returns NULL.
+	if (page_alloc(&pp_store) < 0)
+		return NULL;
+
+	// pgdir_walk sets pp_ref to 1 for the new page table.
+	pp_store->pp_ref = 1;
+
+	uintptr_t *p = KADDR(page2pa(pp_store));
+	//pgdir_walk clears the new page table.
+	memset(p, 0, PGSIZE);
+	//The x86 MMU checks permission bits in both the page directory and the page table,so it's
+	//safe to leave permissions in the page more permissive than strictly necessary.
+	pgdir[PDX(va)] = page2pa(pp_store) | PTE_U | PTE_P;
+	// Finally, pgdir_walk returns a pointer into the new page table.
+	return &p[PTX(va)];
 }
 
 //
@@ -584,27 +594,30 @@ pgdir_walk(pde_t *pgdir, const void *va, int create)
 // The permissions (the low 12 bits) of the page table
 //  entry should be set to 'perm|PTE_P'.
 //
-// Requirements
-//   - If there is already a page mapped at 'va', it should be page_remove()d.
-//   - If necessary, on demand, a page table should be allocated and inserted
-//     into 'pgdir'.
-//   - pp->pp_ref should be incremented if the insertion succeeds.
-//   - The TLB must be invalidated if a page was formerly present at 'va'.
-//
-// Corner-case hint: Make sure to consider what happens when the same 
-// pp is re-inserted at the same virtual address in the same pgdir.
-//
 // RETURNS: 
 //   0 on success
 //   -E_NO_MEM, if page table couldn't be allocated
 //
-// Hint: The TA solution is implemented using pgdir_walk, page_remove,
-// and page2pa.
-//
 int
 page_insert(pde_t *pgdir, struct Page *pp, void *va, int perm) 
 {
-	// Fill this function in
+	//If necessary, on demand, a page table should be allocated and inserted
+	// into 'pgdir'.
+	pte_t *pte = pgdir_walk(pgdir, va, 1);
+	if (pte == 0)
+		return -E_NO_MEM;
+	//when the same pp is re-inserted at the same virtual address in the same pgdir,
+	//check  permission bits
+	if (page2pa(pp) == PTE_ADDR(*pte )) {
+		*pte = *pte | perm;
+		return 0;
+	}
+	//If there is already a page mapped at 'va', it should be page_remove()d.
+	page_remove(pgdir, va);
+	*pte = page2pa(pp) | perm | PTE_P;
+
+	//pp->pp_ref should be incremented if the insertion succeeds.
+	pp->pp_ref += 1;
 	return 0;
 }
 
@@ -613,15 +626,15 @@ page_insert(pde_t *pgdir, struct Page *pp, void *va, int perm)
 // in the page table rooted at pgdir.  Size is a multiple of PGSIZE.
 // Use permission bits perm|PTE_P for the entries.
 //
-// This function is only intended to set up the ``static'' mappings
-// above UTOP. As such, it should *not* change the pp_ref field on the
-// mapped pages.
-//
-// Hint: the TA solution uses pgdir_walk
 static void
 boot_map_segment(pde_t *pgdir, uintptr_t la, size_t size, physaddr_t pa, int perm)
 {
-	// Fill this function in
+	pte_t *pte;
+	uintptr_t i;
+	for (i = la; i < la + size; i += PGSIZE, pa += PGSIZE) {
+		pte = pgdir_walk(pgdir, (void*) la, 1);
+		*pte = pa | perm | PTE_P;
+	}
 }
 
 //
@@ -633,34 +646,38 @@ boot_map_segment(pde_t *pgdir, uintptr_t la, size_t size, physaddr_t pa, int per
 //
 // Return NULL if there is no page mapped at va.
 //
-// Hint: the TA solution uses pgdir_walk and pa2page.
-//
 struct Page *
 page_lookup(pde_t *pgdir, void *va, pte_t **pte_store)
 {
-	// Fill this function in
-	return NULL;
+	pte_t *pte = pgdir_walk(pgdir, va, 0);
+	if (!*pte)
+		return NULL;
+	*pte_store = *pte_store ? pte : *pte_store;
+	return pa2page(*pte);
 }
 
 //
 // Unmaps the physical page at virtual address 'va'.
 // If there is no physical page at that address, silently does nothing.
 //
-// Details:
-//   - The ref count on the physical page should decrement.
-//   - The physical page should be freed if the refcount reaches 0.
-//   - The pg table entry corresponding to 'va' should be set to 0.
-//     (if such a PTE exists)
-//   - The TLB must be invalidated if you remove an entry from
-//     the pg dir/pg table.
-//
-// Hint: The TA solution is implemented using page_lookup,
-// 	tlb_invalidate, and page_decref.
-//
 void
 page_remove(pde_t *pgdir, void *va)
 {
-	// Fill this function in
+	pte_t *pte_store;
+
+	struct Page *pp = page_lookup(pgdir, va, &pte_store);
+	if (pp) {
+		//The ref count on the physical page should decrement.
+		//The physical page should be freed if the refcount reaches 0.
+		page_decref(pp);
+		// The pg table entry corresponding to 'va' should be set to 0.
+
+		*pte_store = 0x0;
+		// The TLB must be invalidated if you remove an entry from
+		// the pg dir/pg table.
+		tlb_invalidate(pgdir, va);
+	}
+
 }
 
 //
@@ -687,8 +704,11 @@ page_check(void)
 
 	// should be able to allocate three pages
 	pp0 = pp1 = pp2 = 0;
+
 	assert(page_alloc(&pp0) == 0);
+
 	assert(page_alloc(&pp1) == 0);
+
 	assert(page_alloc(&pp2) == 0);
 
 	assert(pp0);
@@ -710,11 +730,15 @@ page_check(void)
 
 	// free pp0 and try again: pp0 should be used for page table
 	page_free(pp0);
+
+
 	assert(page_insert(boot_pgdir, pp1, 0x0, 0) == 0);
+	assert(page_alloc(&pp) == -E_NO_MEM);
 	assert(PTE_ADDR(boot_pgdir[0]) == page2pa(pp0));
 	assert(check_va2pa(boot_pgdir, 0x0) == page2pa(pp1));
 	assert(pp1->pp_ref == 1);
 	assert(pp0->pp_ref == 1);
+
 
 	// should be able to map pp2 at PGSIZE because pp0 is already allocated for page table
 	assert(page_insert(boot_pgdir, pp2, (void*) PGSIZE, 0) == 0);
@@ -723,7 +747,6 @@ page_check(void)
 
 	// should be no free memory
 	assert(page_alloc(&pp) == -E_NO_MEM);
-
 	// should be able to map pp2 at PGSIZE because it's already there
 	assert(page_insert(boot_pgdir, pp2, (void*) PGSIZE, 0) == 0);
 	assert(check_va2pa(boot_pgdir, PGSIZE) == page2pa(pp2));
