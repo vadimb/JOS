@@ -226,19 +226,20 @@ i386_vm_init(void)
 	//    - the new image at UPAGES -- kernel R, user R
 	//      (ie. perm = PTE_U | PTE_P)
 	//    - pages itself -- kernel RW, user NONE
-	// Your code goes here:
+	boot_map_segment(pgdir,UPAGES,PTSIZE,PADDR(pages),PTE_U|PTE_P);
+
 
 	//////////////////////////////////////////////////////////////////////
 	// Use the physical memory that 'bootstack' refers to as the kernel
 	// stack.  The kernel stack grows down from virtual address KSTACKTOP.
-	// We consider the entire range from [KSTACKTOP-PTSIZE, KSTACKTOP) 
+	// We consider the entire range from [KSTACKTOP-PTSIZE, KSTACKTOP)
 	// to be the kernel stack, but break this into two pieces:
 	//     * [KSTACKTOP-KSTKSIZE, KSTACKTOP) -- backed by physical memory
 	//     * [KSTACKTOP-PTSIZE, KSTACKTOP-KSTKSIZE) -- not backed; so if
 	//       the kernel overflows its stack, it will fault rather than
 	//       overwrite memory.  Known as a "guard page".
 	//     Permissions: kernel RW, user NONE
-	// Your code goes here:
+	boot_map_segment(pgdir,KSTACKTOP-KSTKSIZE,KSTKSIZE,PADDR(bootstack),PTE_W|PTE_P);
 
 	//////////////////////////////////////////////////////////////////////
 	// Map all of physical memory at KERNBASE. 
@@ -247,7 +248,7 @@ i386_vm_init(void)
 	// We might not have 2^32 - KERNBASE bytes of physical memory, but
 	// we just set up the mapping anyway.
 	// Permissions: kernel RW, user NONE
-	// Your code goes here: 
+    boot_map_segment(pgdir,KERNBASE,0xffffffff - KERNBASE + 1,0,PTE_W);
 
 	// Check that the initial page directory has been set up correctly.
 	check_boot_pgdir();
@@ -397,7 +398,6 @@ check_boot_pgdir(void)
 	n = ROUNDUP(npage*sizeof(struct Page), PGSIZE);
 	for (i = 0; i < n; i += PGSIZE)
 		assert(check_va2pa(pgdir, UPAGES + i) == PADDR(pages) + i);
-	
 
 	// check phys mem
 	for (i = 0; i < npage * PGSIZE; i += PGSIZE)
@@ -418,8 +418,10 @@ check_boot_pgdir(void)
 			assert(pgdir[i]);
 			break;
 		default:
-			if (i >= PDX(KERNBASE))
+			if (i >= PDX(KERNBASE)){
 				assert(pgdir[i]);
+			}
+
 			else
 				assert(pgdir[i] == 0);
 			break;
@@ -508,7 +510,7 @@ page_initpp(struct Page *pp)
 // Allocates a physical page.
 // Does NOT set the contents of the physical page to zero, NOR does it
 // increment the reference count of the page - the caller must do
-// these if necessary. 
+// these if necessary.
 //
 // *pp_store -- is set to point to the Page struct of the newly allocated
 // page
@@ -631,10 +633,12 @@ boot_map_segment(pde_t *pgdir, uintptr_t la, size_t size, physaddr_t pa, int per
 {
 	pte_t *pte;
 	uintptr_t i;
-	for (i = la; i < la + size; i += PGSIZE, pa += PGSIZE) {
-		pte = pgdir_walk(pgdir, (void*) la, 1);
-		*pte = pa | perm | PTE_P;
-	}
+
+	for (i = 0; i < size ; i+=PGSIZE) {
+		pte = pgdir_walk(pgdir,  i+(void*)la, 1);
+		*pte = (pa+i)| perm | PTE_P;
+		pgdir[PDX(i+la)] |= perm;
+		}
 }
 
 //
